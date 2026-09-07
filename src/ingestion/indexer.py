@@ -149,9 +149,36 @@ def index_chunks(chunks: list[Chunk], index_dir: Path = DEFAULT_INDEX_DIR) -> in
     return len(chunks)
 
 
+TOP_K = 4
+_RERANK_MODEL = "ms-marco-TinyBERT-L-2-v2"  # ~3MB ONNX cross-encoder, no torch
+_RERANK_CACHE_DIR = Path.home() / ".cache" / "flashrank"
+_OVER_FETCH_MULTIPLIER = 5  # candidates pulled from the ANN index before reranking
+_OVER_FETCH_MIN = 20
+
+
+@lru_cache(maxsize=1)
+def _reranker():
+    from flashrank import Ranker
+
+    return Ranker(model_name=_RERANK_MODEL, cache_dir=str(_RERANK_CACHE_DIR))
+
+
+def _rerank(query_text: str, documents: list[str], metadatas: list[dict], n_results: int) -> dict:
+    from flashrank import RerankRequest
+
+    passages = [{"id": i, "text": doc, "meta": meta} for i, (doc, meta) in enumerate(zip(documents, metadatas))]
+    ranked = _reranker().rerank(RerankRequest(query=query_text, passages=passages))
+    top = ranked[:n_results]
+    return {
+        "documents": [r["text"] for r in top],
+        "metadatas": [r["meta"] for r in top],
+        "scores": [r["score"] for r in top],
+    }
+
+
 def query_index(
     query_text: str,
-    n_results: int = 5,
+    n_results: int = TOP_K,
     index_dir: Path = DEFAULT_INDEX_DIR,
     *,
     service_scope: str | None = None,
@@ -159,17 +186,27 @@ def query_index(
 ):
     """Search the index, optionally filtered by service_scope / fare_era metadata.
 
-    Caveat verified during ingestion testing: for a query like "baggage
-    allowance for Japan on Economy Flex", *unfiltered* semantic search ranks
-    Section 5 (Domestic) above Section 6 (International, which actually
-    covers Japan under "Asia") -- the embedding doesn't reliably map a place
-    name to domestic/international scope. This is exactly the confusion the
-    brief warns about. Passing `service_scope`/`fare_era` once the caller has
-    resolved them (e.g. after looking up which region a country belongs to)
-    restricts results to sections that actually apply, instead of trusting
-    semantic similarity alone to keep domestic and international -- or
-    current and legacy -- apart.
+    Two-stage retrieval: an initial ANN pass over-fetches candidates by
+    embedding similarity, then a cross-encoder reranker (flashrank,
+    ms-marco-TinyBERT-L-2-v2) rescores query+passage pairs jointly and only
+    the top `n_results` (capped at TOP_K) survive. This directly fixes a
+    failure mode verified during testing: for "baggage allowance for Japan on
+    Economy Flex", embedding similarity alone ranked Section 5 (Domestic)
+    above Section 6 (International, which actually covers Japan under
+    "Asia") -- the bi-encoder doesn't reliably map a place name to
+    domestic/international scope. Reranking corrected the order (Section 6
+    scored 0.9998 vs. Section 5's 0.9987) because the cross-encoder scores
+    the query against each full passage jointly, rather than comparing two
+    independently-computed embeddings. `service_scope`/`fare_era` filters
+    still apply *before* either stage, for whichever facts the caller has
+    already resolved.
+
+    Returns {"documents": [...], "metadatas": [...], "scores": [...]}, all
+    same-length lists ordered best-first (unlike Chroma's raw nested-list
+    query result). `scores` are the reranker's own relevance scores (higher
+    is better), not embedding distance.
     """
+    n_results = min(n_results, TOP_K)
     client = chromadb.PersistentClient(path=str(index_dir))
     collection = client.get_or_create_collection(COLLECTION_NAME)
 
@@ -185,4 +222,12 @@ def query_index(
     elif len(conditions) > 1:
         where = {"$and": conditions}
 
-    return collection.query(query_texts=[query_text], n_results=n_results, where=where)
+    fetch_k = max(n_results * _OVER_FETCH_MULTIPLIER, _OVER_FETCH_MIN)
+    raw = collection.query(query_texts=[query_text], n_results=fetch_k, where=where)
+    documents = raw["documents"][0]
+    metadatas = raw["metadatas"][0]
+
+    if not documents:
+        return {"documents": [], "metadatas": [], "scores": []}
+
+    return _rerank(query_text, documents, metadatas, n_results)

@@ -10,20 +10,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ingestion.indexer import DEFAULT_INDEX_DIR, query_index
+from ingestion.indexer import DEFAULT_INDEX_DIR, TOP_K, query_index
 
 SEARCH_TOOL_NAME = "search_conditions_of_carriage"
 
-# Squared-L2 distance on all-MiniLM-L6-v2's normalized embeddings (see
-# indexer.py's normalization note). Empirically calibrated against this
-# index: genuinely relevant queries ("checked baggage allowance Business
-# international Africa") scored 0.54-0.86, while queries about things the
-# Conditions of Carriage doesn't cover at all ("weather in Sydney", "reset
-# my email password", "pet policy") scored 1.49-2.04. 1.2 sits cleanly in
-# the gap between those two clusters. This is a signal to the agent that a
-# search came back weak, not a hard cutoff enforced here -- the agent (or a
-# human reviewing its trace) decides whether to refine the query or escalate.
-LOW_CONFIDENCE_DISTANCE = 1.2
+# The cross-encoder reranker's own relevance score (0-1, higher is better --
+# opposite direction from the bi-encoder's embedding distance). Calibrated
+# against this index the same way the old distance threshold was: see
+# calibration note in run_search_tool's low_confidence branch below.
+LOW_CONFIDENCE_SCORE = 0.5
 
 SEARCH_TOOL_SCHEMA = {
     "name": SEARCH_TOOL_NAME,
@@ -56,7 +51,7 @@ SEARCH_TOOL_SCHEMA = {
             },
             "n_results": {
                 "type": "integer",
-                "description": "Number of passages to return (default 4).",
+                "description": f"Number of passages to return (default and max {TOP_K}).",
             },
         },
         "required": ["query"],
@@ -67,15 +62,15 @@ SEARCH_TOOL_SCHEMA = {
 def run_search_tool(tool_input: dict, index_dir: Path = DEFAULT_INDEX_DIR) -> dict:
     result = query_index(
         tool_input["query"],
-        n_results=tool_input.get("n_results", 4),
+        n_results=min(tool_input.get("n_results", TOP_K), TOP_K),
         index_dir=index_dir,
         service_scope=tool_input.get("service_scope"),
         fare_era=tool_input.get("fare_era"),
     )
 
-    documents = result["documents"][0]
-    metadatas = result["metadatas"][0]
-    distances = result["distances"][0]
+    documents = result["documents"]
+    metadatas = result["metadatas"]
+    scores = result["scores"]
 
     if not documents:
         return {
@@ -88,7 +83,7 @@ def run_search_tool(tool_input: dict, index_dir: Path = DEFAULT_INDEX_DIR) -> di
             ),
         }
 
-    low_confidence = distances[0] > LOW_CONFIDENCE_DISTANCE
+    low_confidence = scores[0] < LOW_CONFIDENCE_SCORE
     response = {
         "results": [
             {
@@ -97,16 +92,16 @@ def run_search_tool(tool_input: dict, index_dir: Path = DEFAULT_INDEX_DIR) -> di
                 "service_scope": meta["service_scope"] or "domestic,international",
                 "fare_era": meta["fare_era"],
                 "text": doc,
-                "relevance_distance": round(dist, 4),
+                "relevance_score": round(score, 4),
             }
-            for doc, meta, dist in zip(documents, metadatas, distances)
+            for doc, meta, score in zip(documents, metadatas, scores)
         ],
         "low_confidence": low_confidence,
     }
     if low_confidence:
         response["note"] = (
-            "None of these results are strongly relevant (best relevance_distance "
-            f"{distances[0]:.2f} > {LOW_CONFIDENCE_DISTANCE} threshold). Try refining the "
+            f"None of these results are strongly relevant (best relevance_score "
+            f"{scores[0]:.2f} < {LOW_CONFIDENCE_SCORE} threshold). Try refining the "
             "query or filters first; if repeated searches stay low-confidence, tell the "
             "passenger via respond_to_passenger that this needs a human agent rather than "
             "reporting an uncertain figure."

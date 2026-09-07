@@ -18,6 +18,10 @@ chromadb==1.5.9
 # token length (see src/ingestion/indexer.py).
 langchain-text-splitters==1.1.2
 
+# Cross-encoder reranking of retrieved candidates (ONNX, no torch) -- see
+# src/ingestion/indexer.py's query_index for why this matters.
+FlashRank==0.2.10
+
 # LLM tool-use loop for the retrieval agent (Part B).
 anthropic==1.4.0
 
