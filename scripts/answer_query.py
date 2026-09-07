@@ -46,11 +46,16 @@ def main() -> None:
             f"No index found at {args.index_dir}. Run scripts/run_ingestion.py first."
         )
 
-    answer = answer_query(args.query, index_dir=Path(args.index_dir))
-    verification = verify_answer(answer, PROCESSED_PATH)
+    result = answer_query(args.query, index_dir=Path(args.index_dir))
+    trace = result.pop("_trace")
 
-    trace = answer.pop("_trace")
-    print(json.dumps({"answer": answer, "verification": verification}, indent=2))
+    if result["type"] == "chat":
+        print(result["message"])
+        print(f"\n({len(trace)} tool call(s) made; see log above for detail)", file=sys.stderr)
+        return
+
+    verification = verify_answer(result, PROCESSED_PATH)
+    print(json.dumps({"answer": result, "verification": verification}, indent=2))
     print(f"\n({len(trace)} tool call(s) made; see log above for detail)", file=sys.stderr)
 
     if not verification["all_grounded"]:

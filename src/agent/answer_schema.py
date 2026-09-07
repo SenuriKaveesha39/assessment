@@ -12,6 +12,27 @@ section.
 from __future__ import annotations
 
 SUBMIT_ANSWER_TOOL_NAME = "submit_answer"
+CHAT_TOOL_NAME = "respond_to_passenger"
+
+CHAT_TOOL_SCHEMA = {
+    "name": CHAT_TOOL_NAME,
+    "description": (
+        "Reply directly to the passenger when their message is NOT a fare/baggage/"
+        "entitlement question that needs the Conditions of Carriage -- e.g. a greeting, "
+        "small talk, an out-of-scope request, or a clarifying question you need to ask "
+        "them (e.g. their destination or ticket issue date) before you can look anything "
+        "up. Never state a fare condition, baggage allowance, or other document fact "
+        "through this tool -- any such fact must go through search_conditions_of_carriage "
+        "and submit_answer instead."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "message": {"type": "string", "description": "The reply to show the passenger."},
+        },
+        "required": ["message"],
+    },
+}
 
 _CITED_STRING = {
     "type": "string",

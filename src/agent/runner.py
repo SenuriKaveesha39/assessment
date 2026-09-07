@@ -14,7 +14,12 @@ from pathlib import Path
 
 import anthropic
 
-from .answer_schema import SUBMIT_ANSWER_TOOL_NAME, SUBMIT_ANSWER_TOOL_SCHEMA
+from .answer_schema import (
+    CHAT_TOOL_NAME,
+    CHAT_TOOL_SCHEMA,
+    SUBMIT_ANSWER_TOOL_NAME,
+    SUBMIT_ANSWER_TOOL_SCHEMA,
+)
 from .prompts import SYSTEM_PROMPT
 from .tools import SEARCH_TOOL_NAME, SEARCH_TOOL_SCHEMA, run_search_tool
 
@@ -29,10 +34,15 @@ class AgentError(RuntimeError):
 
 
 def answer_query(query: str, *, index_dir: Path, model: str = DEFAULT_MODEL) -> dict:
-    """Run the agent loop for one passenger query. Returns the submit_answer payload,
-    plus a `_trace` of every tool call made (for citation auditing)."""
+    """Run the agent loop for one passenger message.
+
+    Returns a tagged dict: {"type": "answer", ...submit_answer fields...} for
+    an entitlement question, or {"type": "chat", "message": ...} for anything
+    else (greetings, small talk, a clarifying question back to the passenger).
+    Either way, `_trace` carries every tool call made (for citation auditing).
+    """
     client = anthropic.Anthropic()
-    tools = [SEARCH_TOOL_SCHEMA, SUBMIT_ANSWER_TOOL_SCHEMA]
+    tools = [SEARCH_TOOL_SCHEMA, SUBMIT_ANSWER_TOOL_SCHEMA, CHAT_TOOL_SCHEMA]
     messages: list[dict] = [{"role": "user", "content": query}]
     trace: list[dict] = []
 
@@ -60,7 +70,8 @@ def answer_query(query: str, *, index_dir: Path, model: str = DEFAULT_MODEL) -> 
                     "role": "user",
                     "content": (
                         "You must respond with a tool call: search_conditions_of_carriage "
-                        "if you still need information, or submit_answer if you are done."
+                        "if you still need information, submit_answer if an entitlement "
+                        "question is fully answered, or respond_to_passenger otherwise."
                     ),
                 }
             )
@@ -81,9 +92,10 @@ def answer_query(query: str, *, index_dir: Path, model: str = DEFAULT_MODEL) -> 
                 )
             elif tool_use.name == SUBMIT_ANSWER_TOOL_NAME:
                 logger.info("Turn %d: submit_answer", turn)
-                answer = dict(tool_use.input)
-                answer["_trace"] = trace
-                return answer
+                return {"type": "answer", **tool_use.input, "_trace": trace}
+            elif tool_use.name == CHAT_TOOL_NAME:
+                logger.info("Turn %d: respond_to_passenger", turn)
+                return {"type": "chat", "message": tool_use.input["message"], "_trace": trace}
             else:
                 raise AgentError(f"Unknown tool requested: {tool_use.name}")
 

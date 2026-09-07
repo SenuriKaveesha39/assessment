@@ -57,6 +57,12 @@ def main() -> None:
     answer = answer_query(args.query, index_dir=Path(args.index_dir))
     answer.pop("_trace", None)
 
+    if answer["type"] == "chat":
+        raise SystemExit(
+            f"Agent treated this as a non-entitlement message rather than a fare/baggage "
+            f"question, so there is nothing to put in a letter. It replied: {answer['message']}"
+        )
+
     verification = verify_answer(answer, PROCESSED_PATH)
     if not verification["all_grounded"]:
         ungrounded = [k for k, v in verification["checks"].items() if not v["grounded"]]
