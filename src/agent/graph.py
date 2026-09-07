@@ -158,15 +158,41 @@ def build_graph(index_dir: Path, model: str, checkpointer=None):
         }
 
     def finalize_node(state: AgentState) -> dict:
+        """Extract the terminal answer AND close out every tool_call in this
+        turn with a ToolMessage -- including the finalizing call itself, and
+        any other tool_call that happened to arrive in the same batch (e.g. a
+        parallel search alongside submit_answer).
+
+        Anthropic requires every tool_use to have a matching tool_result
+        somewhere later in the conversation, not just "for this turn" --
+        skipping that for the finalizing call is invisible for a one-shot
+        script (fresh thread_id, history discarded after) but corrupts a
+        multi-turn thread permanently: the *next* answer_query() call on the
+        same thread_id resends this entire history, and the API rejects it
+        outright for the dangling tool_use with no tool_result.
+        """
         last = state["messages"][-1]
+        final_result = None
+        tool_messages = []
         for tc in last.tool_calls:
-            if tc["name"] == submit_answer.name:
+            if tc["name"] == submit_answer.name and final_result is None:
                 logger.info("submit_answer")
-                return {"final_result": {"type": "answer", **tc["args"]}}
-            if tc["name"] == respond_to_passenger.name:
+                final_result = {"type": "answer", **tc["args"]}
+                tool_messages.append(ToolMessage(content="Answer submitted.", tool_call_id=tc["id"]))
+            elif tc["name"] == respond_to_passenger.name and final_result is None:
                 logger.info("respond_to_passenger")
-                return {"final_result": {"type": "chat", "message": tc["args"]["message"]}}
-        raise RuntimeError("finalize_node reached without a terminal tool call")
+                final_result = {"type": "chat", "message": tc["args"]["message"]}
+                tool_messages.append(ToolMessage(content="Reply sent.", tool_call_id=tc["id"]))
+            else:
+                tool_messages.append(
+                    ToolMessage(
+                        content="Not executed: the assistant finalized its answer in this turn.",
+                        tool_call_id=tc["id"],
+                    )
+                )
+        if final_result is None:
+            raise RuntimeError("finalize_node reached without a terminal tool call")
+        return {"messages": tool_messages, "final_result": final_result}
 
     graph = StateGraph(AgentState)
     graph.add_node("agent", agent_node)

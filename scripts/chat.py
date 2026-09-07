@@ -43,7 +43,7 @@ from letters.template import build_merge_fields, populate_letter  # noqa: E402
 DEFAULT_TEMPLATE = Path("template/Sandpit Air Baggage Allowance Confirmation.docx")
 
 HELP_TEXT = """\
-Commands:
+Commands (the leading "/" is optional -- "exit" works the same as "/exit"):
   <question>   Ask a passenger query, e.g. "What is the checked baggage
                 allowance for a Business fare to Japan issued today?"
                 A verified entitlement answer auto-generates its
@@ -167,16 +167,21 @@ def main() -> None:
 
         if not line:
             continue
-        if line in ("/quit", "/exit"):
+        # Accept commands with or without the leading "/" -- a passenger
+        # (or an interactive user) typing bare "exit" expects that to leave,
+        # not get forwarded to the LLM as a question. Exact-word match only,
+        # so this never fires on a real query that merely mentions "clear".
+        command = line.lower().lstrip("/")
+        if command in ("quit", "exit"):
             break
-        if line == "/help":
+        if command == "help":
             print(HELP_TEXT)
             continue
-        if line == "/clear":
+        if command == "clear":
             session.clear()
             print("Conversation cleared -- starting fresh.\n")
             continue
-        if line == "/letter":
+        if command == "letter":
             if session.last_result is None:
                 print("Ask a question first, then /letter to generate the confirmation.")
                 continue
