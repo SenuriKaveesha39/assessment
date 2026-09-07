@@ -67,8 +67,9 @@ def main() -> None:
     if not verification["all_grounded"]:
         ungrounded = [k for k, v in verification["checks"].items() if not v["grounded"]]
         raise SystemExit(
-            f"Refusing to generate a letter: these facts were not verified against the "
-            f"cited source sections: {ungrounded}. Answer was: {answer}"
+            f"Refusing to generate a letter: {ungrounded} were not verified against the "
+            f"cited source sections. Escalating to a human agent rather than sending an "
+            f"unverified confirmation. Answer was: {answer}"
         )
     logger.info("All facts grounded in cited sections: %s", verification["checks"])
 

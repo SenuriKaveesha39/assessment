@@ -14,6 +14,17 @@ from ingestion.indexer import DEFAULT_INDEX_DIR, query_index
 
 SEARCH_TOOL_NAME = "search_conditions_of_carriage"
 
+# Squared-L2 distance on all-MiniLM-L6-v2's normalized embeddings (see
+# indexer.py's normalization note). Empirically calibrated against this
+# index: genuinely relevant queries ("checked baggage allowance Business
+# international Africa") scored 0.54-0.86, while queries about things the
+# Conditions of Carriage doesn't cover at all ("weather in Sydney", "reset
+# my email password", "pet policy") scored 1.49-2.04. 1.2 sits cleanly in
+# the gap between those two clusters. This is a signal to the agent that a
+# search came back weak, not a hard cutoff enforced here -- the agent (or a
+# human reviewing its trace) decides whether to refine the query or escalate.
+LOW_CONFIDENCE_DISTANCE = 1.2
+
 SEARCH_TOOL_SCHEMA = {
     "name": SEARCH_TOOL_NAME,
     "description": (
@@ -69,10 +80,16 @@ def run_search_tool(tool_input: dict, index_dir: Path = DEFAULT_INDEX_DIR) -> di
     if not documents:
         return {
             "results": [],
-            "note": "No sections matched. Try a broader query or remove a filter.",
+            "low_confidence": True,
+            "note": (
+                "No sections matched. Try a broader query or remove a filter. If repeated "
+                "searches stay empty or low-confidence, tell the passenger via "
+                "respond_to_passenger that this needs a human agent -- do not guess."
+            ),
         }
 
-    return {
+    low_confidence = distances[0] > LOW_CONFIDENCE_DISTANCE
+    response = {
         "results": [
             {
                 "section_number": meta["section_number"],
@@ -83,5 +100,15 @@ def run_search_tool(tool_input: dict, index_dir: Path = DEFAULT_INDEX_DIR) -> di
                 "relevance_distance": round(dist, 4),
             }
             for doc, meta, dist in zip(documents, metadatas, distances)
-        ]
+        ],
+        "low_confidence": low_confidence,
     }
+    if low_confidence:
+        response["note"] = (
+            "None of these results are strongly relevant (best relevance_distance "
+            f"{distances[0]:.2f} > {LOW_CONFIDENCE_DISTANCE} threshold). Try refining the "
+            "query or filters first; if repeated searches stay low-confidence, tell the "
+            "passenger via respond_to_passenger that this needs a human agent rather than "
+            "reporting an uncertain figure."
+        )
+    return response

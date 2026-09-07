@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import select
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -57,13 +58,21 @@ def _print_answer(answer: dict, verification: dict) -> None:
         print("  [verified: every cited fact was found in its cited section]\n")
     else:
         ungrounded = [k for k, v in verification["checks"].items() if not v["grounded"]]
-        print(f"  [WARNING: could not verify these facts against their cited sections: {ungrounded}]\n")
+        print(
+            f"  [NOT VERIFIED: {ungrounded} could not be confirmed against their cited "
+            f"sections -- do not rely on this answer. Escalating to a human agent is the "
+            f"safe next step; use /letter only once a verified answer is shown.]\n"
+        )
 
 
 def _generate_letter(answer: dict, verification: dict, template_path: Path) -> None:
     if not verification["all_grounded"]:
         ungrounded = [k for k, v in verification["checks"].items() if not v["grounded"]]
-        print(f"Refusing to generate a letter: unverified facts {ungrounded}. Ask again or rephrase.")
+        print(
+            f"Refusing to generate a letter: {ungrounded} could not be verified against "
+            f"their cited sections. This has been held back for a human agent to review "
+            f"rather than sent to the passenger -- ask again or rephrase, or escalate."
+        )
         return
     if not template_path.exists():
         print(f"Template not found at {template_path}.")
@@ -92,6 +101,26 @@ def _handle_query(query: str, *, index_dir: Path) -> tuple[dict, dict] | None:
     return result, verification
 
 
+def _read_query(prompt: str = "You: ") -> str:
+    """Read one line, then greedily absorb any lines already sitting in stdin.
+
+    input() stops at the first newline, so pasting a query that has hard
+    line breaks (e.g. copied from a document wrapped at 80 columns) would
+    otherwise silently split it into several incomplete queries -- one per
+    remaining line, each fed to the agent on its own with no way to tell
+    that this happened. A real interactive Enter-press never has further
+    lines already buffered, so treating "more is available right now" as
+    "this was one paste" is a safe way to reassemble it into one query.
+    """
+    parts = [input(prompt)]
+    while select.select([sys.stdin], [], [], 0)[0]:
+        extra = sys.stdin.readline()
+        if not extra:
+            break
+        parts.append(extra.rstrip("\n"))
+    return " ".join(p.strip() for p in parts if p.strip())
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--query", default=None, help="Answer one question and exit instead of looping.")
@@ -114,7 +143,7 @@ def main() -> None:
 
     while True:
         try:
-            line = input("You: ").strip()
+            line = _read_query().strip()
         except (EOFError, KeyboardInterrupt):
             print()
             break
