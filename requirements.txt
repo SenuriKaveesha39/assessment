@@ -14,6 +14,10 @@ pydantic==2.13.5
 # touching the ingestion pipeline -- see src/ingestion/indexer.py.
 chromadb==1.5.9
 
+# Token-aware recursive chunking, sized to the embedding model's own max
+# token length (see src/ingestion/indexer.py).
+langchain-text-splitters==1.1.2
+
 # LLM tool-use loop for the retrieval agent (Part B).
 anthropic==1.4.0
 
