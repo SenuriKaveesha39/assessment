@@ -18,6 +18,18 @@ from pathlib import Path
 
 _SECTION_NUM_RE = re.compile(r"\d+")
 _WEIGHT_RE = re.compile(r"\d+(?:\.\d+)?\s*kg", re.IGNORECASE)
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+_CITATION_MARKER_RE = re.compile(r"\(Sections?\s+[\d,\s]+\)", re.IGNORECASE)
+# A sentence is treated as "factual" (and therefore required to carry a
+# citation) if it mentions a number or one of the domain terms every
+# entitlement answer revolves around. This is deliberately broad -- a false
+# positive here just means a harmless sentence gets asked for a citation it
+# didn't need, whereas a false negative would let an uncited claim slip past
+# the whole point of this check.
+_FACTUAL_HINT_RE = re.compile(
+    r"\d|\bkg\b|allowance|baggage|fare|region|current|legacy|carry-on|checked|entitlement",
+    re.IGNORECASE,
+)
 
 
 def _load_parsed(processed_path: Path) -> dict:
@@ -49,6 +61,27 @@ def _primary_needle(value: str) -> str:
     return match.group(0) if match else value
 
 
+def _check_summary_citation_coverage(summary: str) -> dict:
+    """Flag any sentence in the prose summary that states a fact with no citation.
+
+    The per-field checks above confirm that destination_region_sections etc.
+    are individually grounded, but the passenger-facing text is `summary`,
+    not those fields -- a model could cite Section 6 correctly in the
+    structured field while still writing an uncited aside in the prose (e.g.
+    slipping in an extra claim while explaining the reasoning). This re-reads
+    the summary itself and checks every sentence that looks factual for an
+    inline "(Section N)" marker, independent of what the structured fields
+    say.
+    """
+    sentences = [s.strip() for s in _SENTENCE_SPLIT_RE.split(summary or "") if s.strip()]
+    uncited = [s for s in sentences if _FACTUAL_HINT_RE.search(s) and not _CITATION_MARKER_RE.search(s)]
+    return {
+        "sentences_checked": len(sentences),
+        "uncited_sentences": uncited,
+        "grounded": not uncited,
+    }
+
+
 def verify_answer(answer: dict, processed_path: Path) -> dict:
     parsed = _load_parsed(processed_path)
     sections = _sections_by_number(parsed)
@@ -77,6 +110,7 @@ def verify_answer(answer: dict, processed_path: Path) -> dict:
             _primary_needle(answer["checked_baggage_allowance"]), "checked_baggage_sections"
         ),
         "carry_on_allowance": check(_primary_needle(answer["carry_on_allowance"]), "carry_on_sections"),
+        "summary_citations": _check_summary_citation_coverage(answer.get("summary", "")),
     }
 
     return {

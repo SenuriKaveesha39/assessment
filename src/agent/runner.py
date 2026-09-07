@@ -1,27 +1,23 @@
-"""The agentic tool-use loop: reason, call tools, evaluate, repeat until submit_answer.
+"""Entry point that compiles and invokes the LangGraph agent for one passenger message.
 
-Uses the Anthropic Messages API directly (not a framework) so the reasoning
-loop -- and the point at which we force the model back on track if it tries
-to answer in plain text instead of calling a tool -- is fully visible.
+The actual reasoning loop -- agent / tools / applicability_check / finalize --
+lives in graph.py. This module just wires up the initial state, bounds how
+many graph steps a single message may take, and reconstructs a flat
+tool-call trace from the resulting message history (for citation auditing
+and the "(N tool calls made)" line the CLIs print).
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 from pathlib import Path
 
-import anthropic
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langgraph.errors import GraphRecursionError
 
-from .answer_schema import (
-    CHAT_TOOL_NAME,
-    CHAT_TOOL_SCHEMA,
-    SUBMIT_ANSWER_TOOL_NAME,
-    SUBMIT_ANSWER_TOOL_SCHEMA,
-)
+from .graph import build_graph
 from .prompts import SYSTEM_PROMPT
-from .tools import SEARCH_TOOL_NAME, SEARCH_TOOL_SCHEMA, run_search_tool
 
 logger = logging.getLogger(__name__)
 
@@ -33,72 +29,47 @@ class AgentError(RuntimeError):
     pass
 
 
+def _reconstruct_trace(messages: list) -> list[dict]:
+    tool_calls_by_id = {}
+    for msg in messages:
+        if isinstance(msg, AIMessage):
+            for tc in msg.tool_calls:
+                tool_calls_by_id[tc["id"]] = {"tool": tc["name"], "input": tc["args"]}
+    return [
+        {**tool_calls_by_id.get(msg.tool_call_id, {}), "output": msg.content}
+        for msg in messages
+        if isinstance(msg, ToolMessage)
+    ]
+
+
 def answer_query(query: str, *, index_dir: Path, model: str = DEFAULT_MODEL) -> dict:
-    """Run the agent loop for one passenger message.
+    """Run the agent graph for one passenger message.
 
     Returns a tagged dict: {"type": "answer", ...submit_answer fields...} for
     an entitlement question, or {"type": "chat", "message": ...} for anything
     else (greetings, small talk, a clarifying question back to the passenger).
-    Either way, `_trace` carries every tool call made (for citation auditing).
+    Either way, `_trace` carries every search tool call made (for citation
+    auditing).
     """
-    client = anthropic.Anthropic()
-    tools = [SEARCH_TOOL_SCHEMA, SUBMIT_ANSWER_TOOL_SCHEMA, CHAT_TOOL_SCHEMA]
-    messages: list[dict] = [{"role": "user", "content": query}]
-    trace: list[dict] = []
+    graph = build_graph(index_dir=index_dir, model=model)
+    initial_state = {
+        "messages": [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=query)],
+        "resolved_scope": None,
+        "resolved_era": None,
+        "pending_tool_results": [],
+        "final_result": None,
+    }
 
-    for turn in range(MAX_TURNS):
-        response = client.messages.create(
-            model=model,
-            max_tokens=2048,
-            system=SYSTEM_PROMPT,
-            tools=tools,
-            messages=messages,
-            # This SDK's typed signature dropped `temperature` for the newer
-            # model family, but the API still accepts it as a pass-through.
-            extra_body={"temperature": 0},
-        )
-        messages.append({"role": "assistant", "content": response.content})
+    try:
+        # Each logical turn is at most two graph steps (agent -> tools ->
+        # applicability_check, or agent -> remind); triple MAX_TURNS for margin.
+        final_state = graph.invoke(initial_state, config={"recursion_limit": MAX_TURNS * 3})
+    except GraphRecursionError as e:
+        raise AgentError(f"Agent did not submit an answer within {MAX_TURNS} turns") from e
 
-        tool_uses = [block for block in response.content if block.type == "tool_use"]
+    result = final_state.get("final_result")
+    if result is None:
+        raise AgentError("Agent graph ended without submitting an answer")
 
-        if not tool_uses:
-            # The system prompt requires a tool call every turn; nudge back
-            # on track rather than accepting an un-cited free-text answer.
-            logger.warning("Turn %d: model responded without a tool call, re-prompting", turn)
-            messages.append(
-                {
-                    "role": "user",
-                    "content": (
-                        "You must respond with a tool call: search_conditions_of_carriage "
-                        "if you still need information, submit_answer if an entitlement "
-                        "question is fully answered, or respond_to_passenger otherwise."
-                    ),
-                }
-            )
-            continue
-
-        tool_results = []
-        for tool_use in tool_uses:
-            if tool_use.name == SEARCH_TOOL_NAME:
-                logger.info("Turn %d: search(%s)", turn, tool_use.input)
-                result = run_search_tool(tool_use.input, index_dir=index_dir)
-                trace.append({"tool": tool_use.name, "input": tool_use.input, "output": result})
-                tool_results.append(
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": tool_use.id,
-                        "content": json.dumps(result),
-                    }
-                )
-            elif tool_use.name == SUBMIT_ANSWER_TOOL_NAME:
-                logger.info("Turn %d: submit_answer", turn)
-                return {"type": "answer", **tool_use.input, "_trace": trace}
-            elif tool_use.name == CHAT_TOOL_NAME:
-                logger.info("Turn %d: respond_to_passenger", turn)
-                return {"type": "chat", "message": tool_use.input["message"], "_trace": trace}
-            else:
-                raise AgentError(f"Unknown tool requested: {tool_use.name}")
-
-        messages.append({"role": "user", "content": tool_results})
-
-    raise AgentError(f"Agent did not submit an answer within {MAX_TURNS} turns")
+    result["_trace"] = _reconstruct_trace(final_state["messages"])
+    return result

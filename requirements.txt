@@ -22,8 +22,15 @@ langchain-text-splitters==1.1.2
 # src/ingestion/indexer.py's query_index for why this matters.
 FlashRank==0.2.10
 
-# LLM tool-use loop for the retrieval agent (Part B).
-anthropic==1.4.0
+# Agent orchestration for the retrieval agent (Part B): LangGraph drives the
+# agent/tools/applicability_check/finalize loop (src/agent/graph.py), tools
+# are defined with LangChain's @tool decorator (src/agent/tools.py,
+# answer_schema.py), and langchain-anthropic provides the Claude chat model.
+# The `anthropic` SDK itself is pulled in transitively -- nothing here calls
+# it directly any more.
+langgraph==1.2.11
+langchain-core==1.6.2
+langchain-anthropic==1.7.1
 
 # Loads ANTHROPIC_API_KEY etc. from a local .env file.
 python-dotenv==1.2.3

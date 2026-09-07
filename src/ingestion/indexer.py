@@ -172,7 +172,9 @@ def _rerank(query_text: str, documents: list[str], metadatas: list[dict], n_resu
     return {
         "documents": [r["text"] for r in top],
         "metadatas": [r["meta"] for r in top],
-        "scores": [r["score"] for r in top],
+        # flashrank scores are numpy.float32; cast to plain float so downstream
+        # json.dumps (the tool result the LLM sees) doesn't choke on them.
+        "scores": [float(r["score"]) for r in top],
     }
 
 
