@@ -1,0 +1,20 @@
+.venv/
+env/
+venv/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+pip-wheel-metadata/
+.DS_Store
+.env
+
+# Generated passenger correspondence -- produced at runtime, not a source artifact.
+output/*.docx
+
+# Runtime artifacts: acquired at runtime, never committed (see Part A success criteria).
+data/raw/
+data/processed/
+data/index/

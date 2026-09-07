@@ -1,0 +1,21 @@
+# Browser automation used to discover and download the Conditions of Carriage
+# document from the published website at runtime (Part A: Acquisition).
+playwright==1.62.0
+
+# .docx parsing for structural extraction (headings, paragraphs, lists, tables)
+# and, later, populating the supplied confirmation letter template (Part C).
+python-docx==1.2.0
+
+# Typed data models for parsed sections / document metadata.
+pydantic==2.13.5
+
+# Local embedding + vector index used to make ingested sections retrievable.
+# Swappable later for a hosted vector DB (pgvector/Pinecone/etc.) without
+# touching the ingestion pipeline -- see src/ingestion/indexer.py.
+chromadb==1.5.9
+
+# LLM tool-use loop for the retrieval agent (Part B).
+anthropic==1.4.0
+
+# Loads ANTHROPIC_API_KEY etc. from a local .env file.
+python-dotenv==1.2.3
