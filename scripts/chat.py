@@ -3,8 +3,10 @@
 
 Ask baggage/fare/entitlement questions in a loop; each answer is produced by
 the agent (Part B) via the retrieval tool and independently grounding-checked.
+The conversation has real memory (LangGraph checkpointer, keyed by a
+per-session thread_id) -- follow-up questions can refer back to earlier ones.
 Type /letter at any point to generate the confirmation letter (Part C) from
-the most recent answer.
+the most recent answer, /clear to start a fresh conversation, or /quit to leave.
 
 Usage:
     python scripts/chat.py                  # interactive loop
@@ -29,7 +31,8 @@ from dotenv import load_dotenv  # noqa: E402
 
 load_dotenv()
 
-from agent.runner import AgentError, answer_query  # noqa: E402
+from agent.runner import AgentError  # noqa: E402
+from agent.session import ChatSession  # noqa: E402
 from agent.verification import verify_answer  # noqa: E402
 from ingestion.indexer import DEFAULT_INDEX_DIR  # noqa: E402
 from ingestion.pipeline import PROCESSED_PATH  # noqa: E402
@@ -42,6 +45,7 @@ Commands:
   <question>   Ask a passenger query, e.g. "What is the checked baggage
                 allowance for a Business fare to Japan issued today?"
   /letter       Generate the confirmation letter from the most recent answer
+  /clear        Start a fresh conversation (forgets everything asked so far)
   /help         Show this message
   /quit, /exit  Leave the chat
 """
@@ -84,9 +88,9 @@ def _generate_letter(answer: dict, verification: dict, template_path: Path) -> N
     print(f"Letter written to {output_path}\n")
 
 
-def _handle_query(query: str, *, index_dir: Path) -> tuple[dict, dict] | None:
+def _handle_query(query: str, *, session: ChatSession) -> tuple[dict, dict] | None:
     try:
-        result = answer_query(query, index_dir=index_dir)
+        result = session.ask(query)
     except AgentError as e:
         print(f"Agent error: {e}")
         return None
@@ -134,12 +138,14 @@ def main() -> None:
     if not index_dir.exists():
         raise SystemExit(f"No index found at {index_dir}. Run scripts/run_ingestion.py first.")
 
+    session = ChatSession(index_dir=index_dir)
+
     if args.query:
-        _handle_query(args.query, index_dir=index_dir)
+        _handle_query(args.query, session=session)
+        session.exit()
         return
 
     print("Sandpit Air passenger assistant. Type /help for commands, /quit to leave.\n")
-    last_result: tuple[dict, dict] | None = None
 
     while True:
         try:
@@ -155,16 +161,23 @@ def main() -> None:
         if line == "/help":
             print(HELP_TEXT)
             continue
+        if line == "/clear":
+            session.clear()
+            print("Conversation cleared -- starting fresh.\n")
+            continue
         if line == "/letter":
-            if last_result is None:
+            if session.last_result is None:
                 print("Ask a question first, then /letter to generate the confirmation.")
                 continue
-            _generate_letter(*last_result, template_path=Path(args.template))
+            _generate_letter(*session.last_result, template_path=Path(args.template))
             continue
 
-        result = _handle_query(line, index_dir=index_dir)
+        result = _handle_query(line, session=session)
         if result is not None:
-            last_result = result
+            session.last_result = result
+
+    session.exit()
+    print("Goodbye.")
 
 
 if __name__ == "__main__":

@@ -13,6 +13,7 @@ import argparse
 import json
 import logging
 import sys
+import uuid
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
@@ -21,7 +22,7 @@ from dotenv import load_dotenv  # noqa: E402
 
 load_dotenv()
 
-from agent.runner import answer_query  # noqa: E402
+from agent.runner import answer_query, create_agent  # noqa: E402
 from agent.verification import verify_answer  # noqa: E402
 from ingestion.indexer import DEFAULT_INDEX_DIR  # noqa: E402
 from ingestion.pipeline import PROCESSED_PATH  # noqa: E402
@@ -46,7 +47,11 @@ def main() -> None:
             f"No index found at {args.index_dir}. Run scripts/run_ingestion.py first."
         )
 
-    result = answer_query(args.query, index_dir=Path(args.index_dir))
+    # A one-shot CLI still goes through the checkpointer + thread_id path --
+    # it's just a conversation that happens to be exactly one message long,
+    # so a fresh, never-seen thread_id per run is all that's needed.
+    graph = create_agent(index_dir=Path(args.index_dir))
+    result = answer_query(graph, args.query, thread_id=uuid.uuid4().hex)
     trace = result.pop("_trace")
 
     if result["type"] == "chat":

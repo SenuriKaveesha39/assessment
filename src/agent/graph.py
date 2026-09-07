@@ -20,6 +20,13 @@ rather than relying on the model to notice a metadata field buried in the
 passage text. This is the graph's code-enforced answer to "cross-check
 retrieved context against the constraints in the query" -- applied once,
 uniformly, to every passage, rather than hoped for from prompting alone.
+
+State management: `build_graph` takes an optional `checkpointer` and, when
+one is supplied, compiles a graph that persists `AgentState` per thread_id
+(see runner.py's create_agent/answer_query). Reusing the same compiled graph
+and thread_id across multiple passenger messages gives real multi-turn
+memory -- the message history AND resolved_scope/resolved_era carry over --
+without this module needing to know anything about sessions itself.
 """
 
 from __future__ import annotations
@@ -89,7 +96,7 @@ def _annotate_applicability(result: dict, resolved_scope: Optional[str], resolve
     return result
 
 
-def build_graph(index_dir: Path, model: str):
+def build_graph(index_dir: Path, model: str, checkpointer=None):
     search_tool = make_search_tool(index_dir=index_dir)
     llm = ChatAnthropic(model=model, temperature=0, max_tokens=2048)
     llm_with_tools = llm.bind_tools([search_tool, submit_answer, respond_to_passenger])
@@ -177,4 +184,4 @@ def build_graph(index_dir: Path, model: str):
     graph.add_edge("applicability_check", "agent")
     graph.add_edge("finalize", END)
 
-    return graph.compile()
+    return graph.compile(checkpointer=checkpointer)

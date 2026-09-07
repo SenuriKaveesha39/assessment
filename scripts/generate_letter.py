@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+import uuid
 from datetime import datetime
 from pathlib import Path
 
@@ -23,7 +24,7 @@ from dotenv import load_dotenv  # noqa: E402
 
 load_dotenv()
 
-from agent.runner import answer_query  # noqa: E402
+from agent.runner import answer_query, create_agent  # noqa: E402
 from agent.verification import verify_answer  # noqa: E402
 from ingestion.indexer import DEFAULT_INDEX_DIR  # noqa: E402
 from ingestion.pipeline import PROCESSED_PATH  # noqa: E402
@@ -54,7 +55,10 @@ def main() -> None:
         raise SystemExit(f"Template not found at {args.template}.")
 
     logger.info("Answering passenger query via agent...")
-    answer = answer_query(args.query, index_dir=Path(args.index_dir))
+    # One-shot CLI: still goes through the checkpointer + thread_id path,
+    # just with a fresh, never-seen thread_id since there's only one message.
+    graph = create_agent(index_dir=Path(args.index_dir))
+    answer = answer_query(graph, args.query, thread_id=uuid.uuid4().hex)
     answer.pop("_trace", None)
 
     if answer["type"] == "chat":
