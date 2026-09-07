@@ -5,8 +5,10 @@ Ask baggage/fare/entitlement questions in a loop; each answer is produced by
 the agent (Part B) via the retrieval tool and independently grounding-checked.
 The conversation has real memory (LangGraph checkpointer, keyed by a
 per-session thread_id) -- follow-up questions can refer back to earlier ones.
-Type /letter at any point to generate the confirmation letter (Part C) from
-the most recent answer, /clear to start a fresh conversation, or /quit to leave.
+Every fully-verified entitlement answer immediately generates its
+confirmation letter (Part C) -- no separate step needed; the output path is
+printed right there. /letter re-generates a fresh copy of the last one on
+demand, /clear starts a new conversation, /quit leaves.
 
 Usage:
     python scripts/chat.py                  # interactive loop
@@ -44,7 +46,9 @@ HELP_TEXT = """\
 Commands:
   <question>   Ask a passenger query, e.g. "What is the checked baggage
                 allowance for a Business fare to Japan issued today?"
-  /letter       Generate the confirmation letter from the most recent answer
+                A verified entitlement answer auto-generates its
+                confirmation letter -- the output path is printed with it.
+  /letter       Re-generate a fresh copy of the letter for the most recent answer
   /clear        Start a fresh conversation (forgets everything asked so far)
   /help         Show this message
   /quit, /exit  Leave the chat
@@ -88,7 +92,7 @@ def _generate_letter(answer: dict, verification: dict, template_path: Path) -> N
     print(f"Letter written to {output_path}\n")
 
 
-def _handle_query(query: str, *, session: ChatSession) -> tuple[dict, dict] | None:
+def _handle_query(query: str, *, session: ChatSession, template_path: Path) -> tuple[dict, dict] | None:
     try:
         result = session.ask(query)
     except AgentError as e:
@@ -102,6 +106,13 @@ def _handle_query(query: str, *, session: ChatSession) -> tuple[dict, dict] | No
 
     verification = verify_answer(result, PROCESSED_PATH)
     _print_answer(result, verification)
+
+    # Every verified entitlement answer gets its confirmation letter
+    # immediately -- no separate /letter step. /letter still works too, e.g.
+    # to regenerate a fresh copy on demand.
+    if verification["all_grounded"]:
+        _generate_letter(result, verification, template_path)
+
     return result, verification
 
 
@@ -141,7 +152,7 @@ def main() -> None:
     session = ChatSession(index_dir=index_dir)
 
     if args.query:
-        _handle_query(args.query, session=session)
+        _handle_query(args.query, session=session, template_path=Path(args.template))
         session.exit()
         return
 
@@ -169,10 +180,11 @@ def main() -> None:
             if session.last_result is None:
                 print("Ask a question first, then /letter to generate the confirmation.")
                 continue
+            print("Regenerating a fresh copy of the confirmation letter...")
             _generate_letter(*session.last_result, template_path=Path(args.template))
             continue
 
-        result = _handle_query(line, session=session)
+        result = _handle_query(line, session=session, template_path=Path(args.template))
         if result is not None:
             session.last_result = result
 
